@@ -1,34 +1,70 @@
 import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
 import './App.css'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [prompt, setPrompt] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function ask() {
+    if (!prompt.trim()) return
+    setLoading(true)
+    setError(null)
+    setAnswer('')
+    try {
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      })
+      const contentType = res.headers.get('content-type') || ''
+      const raw = await res.text()
+      let data: any = null
+      if (raw && contentType.includes('application/json')) {
+        try { data = JSON.parse(raw) } catch (_) { /* ignore */ }
+      }
+      if (!res.ok) {
+        const message = (data && data.error) ? data.error : (raw || `HTTP ${res.status}`)
+        throw new Error(message)
+      }
+      setAnswer((data && data.text) ? data.text : raw)
+    } catch (e: any) {
+      setError(e?.message || 'Something went wrong')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
+      <h2>Ask GPT-5</h2>
+      <div style={{ marginBottom: 12 }}>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={5}
+          placeholder="Type your question here..."
+          style={{ width: '100%' }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault()
+              ask()
+            }
+          }}
+        />
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
+      <button onClick={ask} disabled={loading || !prompt.trim()}>
+        {loading ? 'Asking...' : 'Ask'}
+      </button>
+      {error && (
+        <div style={{ color: '#b91c1c', marginTop: 12 }}>Error: {error}</div>
+      )}
+      <div style={{ marginTop: 24 }}>
+        <h3>Answer</h3>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{answer}</pre>
       </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    </div>
   )
 }
 
