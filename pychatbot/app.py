@@ -368,9 +368,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
     for tool_call in choice.message.tool_calls:
       tool_name = tool_call.function.name
       tool_args_json = tool_call.function.arguments
-      result = await dispatch_tool_call(tool_name, tool_args_json)
-      tool_payload = json.dumps(result, ensure_ascii=False)
-      tool_invocations.append({"name": tool_name, "args": tool_args_json, "result": result})
+      try:
+        result = await dispatch_tool_call(tool_name, tool_args_json)
+        tool_payload = json.dumps(result, ensure_ascii=False)
+        tool_invocations.append({"name": tool_name, "args": tool_args_json, "result": result})
+      except Exception as err:
+        # If tool execution fails, still provide a response to maintain conversation flow
+        error_result = {"error": str(err), "tool_name": tool_name}
+        tool_payload = json.dumps(error_result, ensure_ascii=False)
+        tool_invocations.append({"name": tool_name, "args": tool_args_json, "result": error_result})
+        print(f"Tool execution error for {tool_name}: {err}")
+      
+      # Always add tool response message to maintain proper conversation flow
       messages.append({
         "role": "tool",
         "tool_call_id": tool_call.id,
