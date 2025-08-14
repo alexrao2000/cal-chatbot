@@ -83,6 +83,7 @@ def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dic
       f"You are an advanced AI assistant connected to the Cal.com API. "
       f"Today's date is {current_date} and the current time is {current_time}. "
       "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. "
+      "ALWAYS start by listing available event types when a user first asks about booking, so they know what options are available. "
       "When details are missing (e.g., email, date/time, event type), ask follow-up questions. "
       "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
       "Prefer ISO 8601 times and always include timezone information when creating bookings. "
