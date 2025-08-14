@@ -20,17 +20,21 @@ function App() {
       })
       const contentType = res.headers.get('content-type') || ''
       const raw = await res.text()
-      let data: any = null
+      let data = null
       if (raw && contentType.includes('application/json')) {
-        try { data = JSON.parse(raw) } catch (_) { /* ignore */ }
+        try { data = JSON.parse(raw) } catch { /* ignore */ }
       }
       if (!res.ok) {
         const message = (data && data.error) ? data.error : (raw || `HTTP ${res.status}`)
         throw new Error(message)
       }
       setAnswer((data && data.text) ? data.text : raw)
-    } catch (e: any) {
-      setError(e?.message || 'Something went wrong')
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError('Something went wrong')
+      }
     } finally {
       setLoading(false)
     }
@@ -38,7 +42,7 @@ function App() {
 
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <h2>Ask GPT-5</h2>
+      <h2>Ask GPT</h2>
       <div style={{ marginBottom: 12 }}>
         <textarea
           value={prompt}
