@@ -21,8 +21,8 @@ pip install -r pychatbot/requirements.txt
 ```env
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
-CALCOM_API_KEY=cal_test_...  # or cal_live_...
-CALCOM_BASE_URL=https://api.cal.com/v1
+CAL_API_KEY=cal_test_...  # or cal_live_...
+CAL_BASE_URL=https://api.cal.com/v1
 ```
 
 ## Run
