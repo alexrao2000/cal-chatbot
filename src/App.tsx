@@ -5,6 +5,7 @@ function App() {
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState('')
   const [email, setEmail] = useState('')
+  const [useAdvanced, setUseAdvanced] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -14,10 +15,15 @@ function App() {
     setError(null)
     setAnswer('')
     try {
-      const res = await fetch('http://localhost:5050/chat', {
+      const endpoint = useAdvanced ? '/chat' : '/api/ask'
+      const body = useAdvanced 
+        ? { session_id: 'web', message: prompt, user_email: email || undefined }
+        : { prompt }
+      
+      const res = await fetch(`http://localhost:5050${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: 'web', message: prompt, user_email: email || undefined }),
+        body: JSON.stringify(body),
       })
       const contentType = res.headers.get('content-type') || ''
       const raw = await res.text()
@@ -45,17 +51,31 @@ function App() {
     <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
       <h2>Ask GPT</h2>
       <div style={{ marginBottom: 12 }}>
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="(Optional) Your email for booking lookups"
-          style={{ width: '100%', marginBottom: 8 }}
-        />
+        <label style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <input
+            type="checkbox"
+            checked={useAdvanced}
+            onChange={(e) => setUseAdvanced(e.target.checked)}
+            style={{ marginRight: 8 }}
+          />
+          Enable Cal.com function calling (advanced mode)
+        </label>
+        {useAdvanced && (
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="(Optional) Your email for booking lookups"
+            style={{ width: '100%', marginBottom: 8 }}
+          />
+        )}
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           rows={5}
-          placeholder="Type your question here..."
+          placeholder={useAdvanced 
+            ? "Ask me to book a meeting, show your events, etc..."
+            : "Type your question here..."
+          }
           style={{ width: '100%' }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

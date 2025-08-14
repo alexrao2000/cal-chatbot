@@ -30,10 +30,10 @@ if not OPENAI_API_KEY:
 
 OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-CALCOM_API_KEY = os.getenv("CALCOM_API_KEY")
-if not CALCOM_API_KEY:
+CAL_API_KEY = os.getenv("CAL_API_KEY")
+if not CAL_API_KEY:
     # We keep the server up to let non-tool conversation work, but tools will raise until configured
-    print("[warn] CALCOM_API_KEY is not set. Cal.com tool calls will fail until configured.")
+    print("[warn] CAL_API_KEY is not set. Cal.com tool calls will fail until configured.")
 
 CALCOM_BASE_URL = (os.getenv("CALCOM_BASE_URL") or "https://api.cal.com/v1").rstrip("/")
 
@@ -82,13 +82,13 @@ def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dic
 
 async def cal_request(method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
                       json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    if not CALCOM_API_KEY:
-        raise HTTPException(status_code=500, detail="CALCOM_API_KEY not configured")
+    if not CAL_API_KEY:
+        raise HTTPException(status_code=500, detail="CAL_API_KEY not configured")
     url = f"{CALCOM_BASE_URL}{path}"
     # Cal.com v1 docs show apiKey via query param.
     # Ref: https://cal.com/docs/api-reference/v1/introduction
     params = dict(params or {})
-    params.setdefault("apiKey", CALCOM_API_KEY)
+    params.setdefault("apiKey", CAL_API_KEY)
     headers = {}
     async with httpx.AsyncClient(timeout=30) as http:
         resp = await http.request(method, url, params=params, headers=headers, json=json_body)
@@ -280,7 +280,45 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"ok": True, "openai_model": OPENAI_MODEL, "calcom_base": CALCOM_BASE_URL, "cal_key": bool(CALCOM_API_KEY)}
+    return {"ok": True, "openai_model": OPENAI_MODEL, "calcom_base": CALCOM_BASE_URL, "cal_key": bool(CAL_API_KEY)}
+
+
+@app.get("/api/health")
+def api_health() -> Dict[str, Any]:
+    """Legacy Node.js compatibility endpoint"""
+    return {"ok": True, "hasKey": bool(OPENAI_API_KEY), "model": OPENAI_MODEL}
+
+
+class AskRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = None
+
+
+@app.post("/api/ask")
+async def api_ask(req: AskRequest) -> Dict[str, Any]:
+    """Legacy Node.js compatibility endpoint - simple OpenAI call without function calling"""
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured on server")
+    
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt (string) is required")
+    
+    try:
+        completion = client.chat.completions.create(
+            model=req.model or OPENAI_MODEL,
+            messages=[{"role": "user", "content": req.prompt}],
+            temperature=0.7,
+        )
+        text = completion.choices[0].message.content or ""
+        return {"text": text}
+    except Exception as err:
+        # Match Node.js error handling
+        status = getattr(err, "status_code", 500)
+        message = getattr(err, "message", str(err))
+        if hasattr(err, "error") and hasattr(err.error, "message"):
+            message = err.error.message
+        print(f"OpenAI error: {err}")
+        raise HTTPException(status_code=status, detail=message)
 
 
 @app.post("/chat", response_model=ChatResponse)
