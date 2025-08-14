@@ -4,6 +4,7 @@ import './App.css'
 function App() {
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState('')
+  const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -13,10 +14,10 @@ function App() {
     setError(null)
     setAnswer('')
     try {
-      const res = await fetch('/api/ask', {
+      const res = await fetch('http://localhost:5050/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ session_id: 'web', message: prompt, user_email: email || undefined }),
       })
       const contentType = res.headers.get('content-type') || ''
       const raw = await res.text()
@@ -44,6 +45,12 @@ function App() {
     <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
       <h2>Ask GPT</h2>
       <div style={{ marginBottom: 12 }}>
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="(Optional) Your email for booking lookups"
+          style={{ width: '100%', marginBottom: 8 }}
+        />
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}

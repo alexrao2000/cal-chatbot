@@ -1,0 +1,47 @@
+# Cal.com Function-Calling Chatbot (FastAPI)
+
+This is a minimal FastAPI backend that uses OpenAI tool/function calling to integrate with the Cal.com v1 API.
+
+## Features
+- Understands natural language requests to:
+  - List event types
+  - List bookings by user email
+  - Create bookings
+  - Cancel bookings
+  - Reschedule bookings (simple cancel+recreate fallback)
+- Maintains basic session context by `session_id`
+
+## Setup
+1. Create a Python 3.10+ virtual environment
+2. Install deps:
+```bash
+pip install -r pychatbot/requirements.txt
+```
+3. Create `.env` (root or `pychatbot/`) with:
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+CALCOM_API_KEY=cal_test_...  # or cal_live_...
+CALCOM_BASE_URL=https://api.cal.com/v1
+```
+
+## Run
+```bash
+uvicorn pychatbot.app:app --reload --port 5050
+```
+
+## API
+- `GET /health` – returns basic config
+- `POST /chat`
+```json
+{
+  "session_id": "demo",
+  "message": "help me book a 30 min meeting tomorrow morning",
+  "user_email": "alice@example.com"
+}
+```
+
+## Notes
+- Tool schemas are defined in code and mapped to Cal.com endpoints per their v1 docs: [Cal.com API v1](https://cal.com/docs/api-reference/v1/introduction)
+- For production, replace in-memory session storage and add authentication.
+
