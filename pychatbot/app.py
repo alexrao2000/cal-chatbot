@@ -117,25 +117,37 @@ async def tool_list_bookings_by_email(email: str) -> Dict[str, Any]:
 async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
   # POST /bookings
   # Expected minimal fields: eventTypeId, start, end, name, email
-  # Additional optional fields can be passed through
+  # Cal.com API expects specific field names and formats
   payload = {
     "eventTypeId": kwargs.get("eventTypeId"),
     "start": kwargs.get("start"),
     "end": kwargs.get("end"),
-    "name": kwargs.get("name"),
-    "email": kwargs.get("email"),
+    "responses": {
+      "name": kwargs.get("name"),
+      "email": kwargs.get("email"),
+    }
   }
-  # Pass-through optional fields if present
-  for optional_key in [
-    "title",
-    "timezone",
-    "location",
-    "notes",
-    "rescheduleUid",
-    "userFields",
-  ]:
-    if optional_key in kwargs and kwargs[optional_key] is not None:
-      payload[optional_key] = kwargs[optional_key]
+  
+  # Add optional fields with correct Cal.com naming
+  if kwargs.get("timeZone") or kwargs.get("timezone"):
+    payload["timeZone"] = kwargs.get("timeZone") or kwargs.get("timezone")
+  
+  if kwargs.get("language"):
+    payload["language"] = kwargs.get("language")
+  else:
+    payload["language"] = "en"  # Default language
+    
+  if kwargs.get("metadata"):
+    payload["metadata"] = kwargs.get("metadata")
+  else:
+    payload["metadata"] = {}  # Default empty metadata
+    
+  if kwargs.get("title"):
+    payload["title"] = kwargs.get("title")
+    
+  if kwargs.get("notes"):
+    payload["responses"]["notes"] = kwargs.get("notes")
+    
   return await cal_request("POST", "/bookings", json_body=payload)
 
 
@@ -211,10 +223,9 @@ TOOLS: List[Dict[str, Any]] = [
           "name": {"type": "string"},
           "email": {"type": "string"},
           "title": {"type": "string"},
-          "timezone": {"type": "string"},
-          "location": {"type": "string"},
+          "timeZone": {"type": "string", "description": "Timezone like 'America/New_York'"},
+          "language": {"type": "string", "description": "Language code like 'en'"},
           "notes": {"type": "string"},
-          "userFields": {"type": "object"},
         },
         "required": ["eventTypeId", "start", "end", "name", "email"],
       },
