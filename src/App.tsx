@@ -5,7 +5,6 @@ function App() {
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState('')
   const [email, setEmail] = useState('')
-  const [useAdvanced, setUseAdvanced] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,10 +14,8 @@ function App() {
     setError(null)
     setAnswer('')
     try {
-      const endpoint = useAdvanced ? '/chat' : '/api/ask'
-      const body = useAdvanced 
-        ? { session_id: 'web', message: prompt, user_email: email || undefined }
-        : { prompt }
+      const endpoint = '/chat'
+      const body = { session_id: 'web', message: prompt, user_email: email || undefined }
       
       const res = await fetch(`http://localhost:5050${endpoint}`, {
         method: 'POST',
@@ -51,31 +48,18 @@ function App() {
     <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
       <h2>Book on Cal.com</h2>
       <div style={{ marginBottom: 12 }}>
-        <label style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-          <input
-            type="checkbox"
-            checked={useAdvanced}
-            onChange={(e) => setUseAdvanced(e.target.checked)}
-            style={{ marginRight: 8 }}
-          />
-          Enable Cal.com function calling (advanced mode)
-        </label>
-        {useAdvanced && (
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="(Optional) Your email for booking lookups"
-            style={{ width: '100%', marginBottom: 8 }}
-          />
-        )}
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Your email (required for bookings)"
+          style={{ width: '100%', marginBottom: 8 }}
+          required
+        />
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           rows={5}
-          placeholder={useAdvanced 
-            ? "Ask me to book a meeting, show your events, etc..."
-            : "Type your question here..."
-          }
+          placeholder="Ask me to book a meeting, show your events, cancel bookings, etc..."
           style={{ width: '100%' }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -85,7 +69,7 @@ function App() {
           }}
         />
       </div>
-      <button onClick={ask} disabled={loading || !prompt.trim()}>
+      <button onClick={ask} disabled={loading || !prompt.trim() || !email.trim()}>
         {loading ? 'Asking...' : 'Ask'}
       </button>
       {error && (
