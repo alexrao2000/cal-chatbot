@@ -28,7 +28,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
   raise RuntimeError("OPENAI_API_KEY not set")
 
-OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
 
 CAL_API_KEY = os.getenv("CAL_API_KEY")
 if not CAL_API_KEY:
@@ -63,11 +63,18 @@ SESSION_ID_TO_MESSAGES: Dict[str, List[Dict[str, Any]]] = {}
 
 def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dict[str, Any]]:
   if session_id not in SESSION_ID_TO_MESSAGES:
+    from datetime import datetime
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     system_preamble = (
-      "You are a helpful assistant connected to the Cal.com API. "
+      f"You are GPT-4o, an advanced AI assistant connected to the Cal.com API. "
+      f"Today's date is {current_date} and the current time is {current_time}. "
+      f"You are running the {OPENAI_MODEL} model. "
       "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. "
       "When details are missing (e.g., email, date/time, event type), ask follow-up questions. "
-      "Prefer ISO 8601 times."
+      "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
+      "Prefer ISO 8601 times and always include timezone information when creating bookings."
     )
     SESSION_ID_TO_MESSAGES[session_id] = [
       {"role": "system", "content": system_preamble},
@@ -292,6 +299,30 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
 @app.get("/health")
 def health() -> Dict[str, Any]:
   return {"ok": True, "openai_model": OPENAI_MODEL, "calcom_base": CALCOM_BASE_URL, "cal_key": bool(CAL_API_KEY)}
+
+
+@app.get("/models")
+async def list_models() -> Dict[str, Any]:
+  """List all models available to your OpenAI API key"""
+  if not OPENAI_API_KEY:
+    raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+  
+  try:
+    models_response = client.models.list()
+    model_ids = [model.id for model in models_response.data]
+    model_ids.sort()
+    
+    # Filter to just chat models (gpt-* typically)
+    chat_models = [m for m in model_ids if 'gpt' in m.lower()]
+    
+    return {
+      "current_model": OPENAI_MODEL,
+      "all_models": model_ids,
+      "chat_models": chat_models,
+      "recommended": [m for m in chat_models if any(x in m for x in ['gpt-4o', 'gpt-4-turbo', 'gpt-4'])]
+    }
+  except Exception as err:
+    raise HTTPException(status_code=500, detail=f"Failed to list models: {str(err)}")
 
 
 @app.get("/api/health")
