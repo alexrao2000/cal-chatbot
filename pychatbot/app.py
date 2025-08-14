@@ -30,12 +30,23 @@ if not OPENAI_API_KEY:
 
 OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
 
-CAL_API_KEY = os.getenv("CAL_API_KEY")
+CAL_API_KEY = os.getenv("CAL_API_KEY") or os.getenv("CALCOM_API_KEY")
 if not CAL_API_KEY:
   # We keep the server up to let non-tool conversation work, but tools will raise until configured
-  print("[warn] CAL_API_KEY is not set. Cal.com tool calls will fail until configured.")
+  print("[warn] CAL_API_KEY/CALCOM_API_KEY is not set. Cal.com tool calls will fail until configured.")
 
-CALCOM_BASE_URL = (os.getenv("CALCOM_BASE_URL") or "https://api.cal.com/v1").rstrip("/")
+# Support both CAL_BASE_URL and CALCOM_BASE_URL
+CAL_BASE_URL = os.getenv("CAL_BASE_URL") or os.getenv("CALCOM_BASE_URL") or "https://api.cal.com/v1"
+
+# If user provided a booking page URL, convert it to API format
+if "cal.com/" in CAL_BASE_URL and not CAL_BASE_URL.startswith("https://api."):
+  # Extract username from booking URL like cal.com/alex-rao-byjxbi/
+  if CAL_BASE_URL.startswith("cal.com/"):
+    CAL_BASE_URL = "https://api.cal.com/v1"
+  elif "cal.com/" in CAL_BASE_URL:
+    CAL_BASE_URL = "https://api.cal.com/v1"
+
+CALCOM_BASE_URL = CAL_BASE_URL.rstrip("/")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -68,13 +79,15 @@ def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dic
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     system_preamble = (
-      f"You are GPT-4o, an advanced AI assistant connected to the Cal.com API. "
+      f"IMPORTANT: You are {OPENAI_MODEL}, NOT GPT-3. Do not claim to be GPT-3 or any other model. "
+      f"You are an advanced AI assistant connected to the Cal.com API. "
       f"Today's date is {current_date} and the current time is {current_time}. "
-      f"You are running the {OPENAI_MODEL} model. "
       "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. "
       "When details are missing (e.g., email, date/time, event type), ask follow-up questions. "
       "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
-      "Prefer ISO 8601 times and always include timezone information when creating bookings."
+      "Prefer ISO 8601 times and always include timezone information when creating bookings. "
+      "If you encounter 'no_available_users_found_error', explain that the user needs to set up their Cal.com account properly first (user profile, availability, event types). "
+      "If asked about your model, state that you are accessing the OpenAI API but cannot reliably self-identify your exact model version."
     )
     SESSION_ID_TO_MESSAGES[session_id] = [
       {"role": "system", "content": system_preamble},
@@ -111,8 +124,13 @@ async def cal_request(method: str, path: str, *, params: Optional[Dict[str, Any]
 # ---- Tool implementations (actual effects) ----
 
 async def tool_list_event_types() -> Dict[str, Any]:
-  # GET /event-types
+  # GET /event-types - this should list all event types available to your API key
   return await cal_request("GET", "/event-types")
+
+
+async def tool_list_users() -> Dict[str, Any]:
+  # GET /users - list all users in your Cal.com account
+  return await cal_request("GET", "/users")
 
 
 async def tool_list_bookings_by_email(email: str) -> Dict[str, Any]:
@@ -135,6 +153,26 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
     }
   }
   
+  # Convert timezone-aware times to UTC for Cal.com
+  start_time = kwargs.get("start")
+  end_time = kwargs.get("end")
+  if start_time and "T" in start_time:
+    # Remove timezone offset and convert to UTC format that Cal.com expects
+    if "+" in start_time or start_time.count("-") > 2:
+      from datetime import datetime
+      import re
+      # Extract timezone offset and convert to UTC
+      # For now, let's use ISO format without timezone
+      start_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', start_time)
+      end_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', end_time) if end_time else None
+      if not start_clean.endswith('Z'):
+        start_clean += 'Z'
+      if end_clean and not end_clean.endswith('Z'):
+        end_clean += 'Z'
+      payload["start"] = start_clean
+      if end_clean:
+        payload["end"] = end_clean
+  
   # Add optional fields with correct Cal.com naming
   if kwargs.get("timeZone") or kwargs.get("timezone"):
     payload["timeZone"] = kwargs.get("timeZone") or kwargs.get("timezone")
@@ -154,6 +192,9 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
     
   if kwargs.get("notes"):
     payload["responses"]["notes"] = kwargs.get("notes")
+  
+  # Debug logging
+  print(f"[DEBUG] Booking payload: {payload}")
     
   return await cal_request("POST", "/bookings", json_body=payload)
 
@@ -194,6 +235,17 @@ TOOLS: List[Dict[str, Any]] = [
     "function": {
       "name": "list_event_types",
       "description": "List all event types for the authenticated Cal.com account",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+      },
+    },
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_users",
+      "description": "List all users in the Cal.com account to see who can host bookings",
       "parameters": {
         "type": "object",
         "properties": {},
@@ -280,6 +332,8 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
     args = {}
   if name == "list_event_types":
     return await tool_list_event_types()
+  if name == "list_users":
+    return await tool_list_users()
   if name == "list_bookings_by_email":
     email = args.get("email")
     return await tool_list_bookings_by_email(email=email)
@@ -299,6 +353,14 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
 @app.get("/health")
 def health() -> Dict[str, Any]:
   return {"ok": True, "openai_model": OPENAI_MODEL, "calcom_base": CALCOM_BASE_URL, "cal_key": bool(CAL_API_KEY)}
+
+
+@app.post("/clear-session")
+async def clear_session(session_id: str = "web") -> Dict[str, Any]:
+  """Clear conversation history for a session"""
+  if session_id in SESSION_ID_TO_MESSAGES:
+    del SESSION_ID_TO_MESSAGES[session_id]
+  return {"cleared": True, "session_id": session_id}
 
 
 @app.get("/models")
@@ -405,7 +467,24 @@ async def chat(req: ChatRequest) -> ChatResponse:
         tool_invocations.append({"name": tool_name, "args": tool_args_json, "result": result})
       except Exception as err:
         # If tool execution fails, still provide a response to maintain conversation flow
-        error_result = {"error": str(err), "tool_name": tool_name}
+        error_msg = str(err)
+        
+        # Provide helpful guidance for common Cal.com errors
+        if "no_available_users_found_error" in error_msg:
+          error_result = {
+            "error": "no_available_users_found_error", 
+            "tool_name": tool_name,
+            "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
+          }
+        elif "event_type_not_found" in error_msg:
+          error_result = {
+            "error": "event_type_not_found",
+            "tool_name": tool_name, 
+            "guidance": "The event type doesn't exist. First list available event types to see what's available."
+          }
+        else:
+          error_result = {"error": error_msg, "tool_name": tool_name}
+          
         tool_payload = json.dumps(error_result, ensure_ascii=False)
         tool_invocations.append({"name": tool_name, "args": tool_args_json, "result": error_result})
         print(f"Tool execution error for {tool_name}: {err}")
