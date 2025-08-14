@@ -49,7 +49,7 @@ function App() {
 
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <h2>Ask GPT</h2>
+      <h2>Book on Cal.com</h2>
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
           <input
