@@ -84,10 +84,13 @@ def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dic
       f"Today's date is {current_date} and the current time is {current_time}. "
       "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. "
       "ALWAYS start by listing available event types when a user first asks about booking, so they know what options are available. "
+      "ONLY suggest event types that actually exist in the user's Cal.com account - never suggest generic types like 'webinar' or 'consultation' unless they appear in the event types list. "
       "When details are missing (e.g., email, date/time, event type), ask follow-up questions. "
       "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
-      "Prefer ISO 8601 times and always include timezone information when creating bookings. "
+      "When creating bookings, be very careful with timezones - always confirm the user's timezone and use proper ISO 8601 format with timezone offset (e.g., '2024-01-15T23:00:00-08:00' for 11 PM PST). "
+      "Remember that PST is UTC-8 and PDT is UTC-7. Never convert times to UTC unless specifically requested. "
       "If you encounter 'no_available_users_found_error', explain that the user needs to set up their Cal.com account properly first (user profile, availability, event types). "
+      "If you encounter 'availability_conflict' errors, clearly explain that the requested time is outside the user's configured availability hours and suggest alternative times within their availability window. "
       "If asked about your model, state that you are accessing the OpenAI API but cannot reliably self-identify your exact model version."
     )
     SESSION_ID_TO_MESSAGES[session_id] = [
@@ -154,25 +157,15 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
     }
   }
   
-  # Convert timezone-aware times to UTC for Cal.com
+  # Ensure proper timezone handling for Cal.com
   start_time = kwargs.get("start")
   end_time = kwargs.get("end")
   if start_time and "T" in start_time:
-    # Remove timezone offset and convert to UTC format that Cal.com expects
-    if "+" in start_time or start_time.count("-") > 2:
-      from datetime import datetime
-      import re
-      # Extract timezone offset and convert to UTC
-      # For now, let's use ISO format without timezone
-      start_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', start_time)
-      end_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', end_time) if end_time else None
-      if not start_clean.endswith('Z'):
-        start_clean += 'Z'
-      if end_clean and not end_clean.endswith('Z'):
-        end_clean += 'Z'
-      payload["start"] = start_clean
-      if end_clean:
-        payload["end"] = end_clean
+    # Cal.com expects ISO format in the user's timezone, not UTC
+    # Keep the original timezone format that was provided
+    payload["start"] = start_time
+    if end_time:
+      payload["end"] = end_time
   
   # Add optional fields with correct Cal.com naming
   if kwargs.get("timeZone") or kwargs.get("timezone"):
@@ -482,6 +475,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "error": "event_type_not_found",
             "tool_name": tool_name, 
             "guidance": "The event type doesn't exist. First list available event types to see what's available."
+          }
+        elif any(phrase in error_msg.lower() for phrase in ["not available", "outside availability", "availability", "schedule", "conflict", "invalid time"]):
+          error_result = {
+            "error": "availability_conflict",
+            "tool_name": tool_name,
+            "original_error": error_msg,
+            "guidance": "The requested time is outside the available booking hours or conflicts with existing availability. Please choose a different time within the configured availability window."
           }
         else:
           error_result = {"error": error_msg, "tool_name": tool_name}
