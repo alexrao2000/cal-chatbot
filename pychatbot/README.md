@@ -24,7 +24,7 @@ CAL_BASE_URL=cal.com/...
 
 ## Run
 ```bash
-uvicorn pychatbot.app:app --reload --port 5050
+uvicorn app:app --reload --port 5050
 ```
 
 ## API
