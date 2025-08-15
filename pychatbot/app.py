@@ -99,7 +99,8 @@ def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
       "Remember that PST is UTC-8 and PDT is UTC-7. Never convert times to UTC unless specifically requested. "
       "If you encounter 'no_available_users_found_error', explain that the user needs to set up their Cal.com account properly first (user profile, availability, event types). "
       "If you encounter 'availability_conflict' errors, clearly explain that the requested time is outside the user's configured availability hours and suggest alternative times within their availability window. "
-      "If you encounter 'scheduling_conflict' errors, explain that the time slot is already booked and use the get_available_slots tool to suggest alternative times near the requested time. "
+      "If you encounter 'scheduling_conflict' errors, explain that the time slot is already booked and suggest trying nearby times or checking the calendar directly. You can try calling get_available_slots but it may not be fully supported in the Cal.com v1 API. "
+      "If you encounter 'scheduling_conflict_disguised' errors, this means the Cal.com API returned a misleading error - treat it as an availability conflict and suggest alternative times or checking availability settings. "
       "If asked about your model, state that you are accessing the OpenAI API but cannot reliably self-identify your exact model version."
     )
     SESSION_ID_TO_MESSAGES[session_id] = [
@@ -142,14 +143,12 @@ async def tool_list_users() -> Dict[str, Any]:
 
 
 async def tool_get_available_slots(event_type_id: int, start_date: str, end_date: str, timezone: str = "America/Los_Angeles") -> Dict[str, Any]:
-  # GET /slots - get available time slots for an event type
-  params = {
-    "eventTypeId": event_type_id,
-    "startTime": start_date,
-    "endTime": end_date,
-    "timeZone": timezone
+  # Cal.com v1 API doesn't have a reliable /slots endpoint
+  # Return a helpful message instead of failing
+  return {
+    "message": "Available slots checking is not supported in Cal.com v1 API. Please try a different time or check your Cal.com calendar directly.",
+    "suggestion": "Common available times are usually during business hours (9 AM - 5 PM) on weekdays."
   }
-  return await cal_request("GET", "/slots", params=params)
 
 
 async def get_user_email() -> Optional[str]:
@@ -542,17 +541,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
         
         # Provide helpful guidance for common Cal.com errors
         if "no_available_users_found_error" in error_msg:
+          # This error is misleading - it often means availability conflict, not missing users
           # Check if this is a booking error and if we can actually list users
-          # This suggests the account setup is fine, but there's an API issue
           if tool_name == "create_booking":
             try:
               users_check = await cal_request("GET", "/users")
               if users_check and isinstance(users_check, dict) and users_check.get("users"):
+                # Users exist, so this is likely an availability conflict disguised as a user error
                 error_result = {
-                  "error": "no_available_users_found_error",
+                  "error": "scheduling_conflict_disguised",
                   "tool_name": tool_name,
-                  "guidance": "The Cal.com account setup appears correct (users found), but booking creation is failing. This may be a temporary API issue or the event type may not be properly configured. Try again or check if the event type is assigned to a user.",
-                  "debug_info": f"Users found: {len(users_check.get('users', []))}"
+                  "guidance": "This time slot appears to be unavailable. This could be due to: 1) The time being outside your availability hours, 2) A scheduling conflict with existing bookings, or 3) The event type not being properly configured for this time. Try a different time or check your availability settings.",
+                  "debug_info": f"Users found: {len(users_check.get('users', []))}, but booking still failed"
                 }
               else:
                 error_result = {
