@@ -4,7 +4,6 @@ import './App.css'
 function App() {
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState('')
-  const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,7 +14,7 @@ function App() {
     setAnswer('')
     try {
       const endpoint = '/chat'
-      const body = { session_id: 'web', message: prompt, user_email: email || undefined }
+      const body = { session_id: 'web', message: prompt }
       
       const res = await fetch(`http://localhost:5050${endpoint}`, {
         method: 'POST',
@@ -48,13 +47,6 @@ function App() {
     <div style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
       <h2>Book on Cal.com</h2>
       <div style={{ marginBottom: 12 }}>
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="Your email (required for bookings)"
-          style={{ width: '100%', marginBottom: 8 }}
-          required
-        />
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -69,7 +61,7 @@ function App() {
           }}
         />
       </div>
-      <button onClick={ask} disabled={loading || !prompt.trim() || !email.trim()}>
+      <button onClick={ask} disabled={loading || !prompt.trim()}>
         {loading ? 'Asking...' : 'Ask'}
       </button>
       {error && (

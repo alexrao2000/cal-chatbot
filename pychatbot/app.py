@@ -16,7 +16,6 @@ load_dotenv()
 class ChatRequest(BaseModel):
   session_id: str = Field(..., description="Client-chosen session identifier to keep conversation state")
   message: str = Field(..., description="User input text")
-  user_email: Optional[str] = Field(None, description="Optional user email; helps with listing/canceling bookings")
 
 
 class ChatResponse(BaseModel):
@@ -52,6 +51,12 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(title="Cal.com Function-Calling Chatbot", version="0.1.0")
 
+@app.on_event("startup")
+async def startup_event():
+  """Pre-fetch user email on server startup"""
+  if CAL_API_KEY:
+    await get_user_email()
+
 # CORS for local dev (Vite, etc.)
 app.add_middleware(
   CORSMiddleware,
@@ -71,8 +76,11 @@ app.add_middleware(
 # In-memory conversation state. For production, use a store like Redis keyed by session_id.
 SESSION_ID_TO_MESSAGES: Dict[str, List[Dict[str, Any]]] = {}
 
+# Global user info cache
+USER_EMAIL: Optional[str] = None
 
-def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dict[str, Any]]:
+
+def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
   if session_id not in SESSION_ID_TO_MESSAGES:
     from datetime import datetime
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -85,7 +93,7 @@ def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dic
       "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. "
       "ALWAYS start by listing available event types when a user first asks about booking, so they know what options are available. "
       "ONLY suggest event types that actually exist in the user's Cal.com account - never suggest generic types like 'webinar' or 'consultation' unless they appear in the event types list. "
-      "When details are missing (e.g., email, date/time, event type), ask follow-up questions. "
+      "When details are missing (e.g., date/time, event type), ask follow-up questions. Email is automatically retrieved from the account - do not ask users for their email. "
       "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
       "When creating bookings, be very careful with timezones - always confirm the user's timezone and use proper ISO 8601 format with timezone offset (e.g., '2024-01-15T23:00:00-08:00' for 11 PM PST). "
       "Remember that PST is UTC-8 and PDT is UTC-7. Never convert times to UTC unless specifically requested. "
@@ -96,11 +104,6 @@ def get_session_messages(session_id: str, user_email: Optional[str]) -> List[Dic
     SESSION_ID_TO_MESSAGES[session_id] = [
       {"role": "system", "content": system_preamble},
     ]
-    if user_email:
-      SESSION_ID_TO_MESSAGES[session_id].append({
-        "role": "system",
-        "content": f"User email (if needed for bookings): {user_email}",
-      })
   return SESSION_ID_TO_MESSAGES[session_id]
 
 
@@ -137,6 +140,25 @@ async def tool_list_users() -> Dict[str, Any]:
   return await cal_request("GET", "/users")
 
 
+async def get_user_email() -> Optional[str]:
+  """Fetch user email from Cal.com API and cache it globally"""
+  global USER_EMAIL
+  if USER_EMAIL is not None:
+    return USER_EMAIL
+    
+  try:
+    users_data = await cal_request("GET", "/users")
+    users = users_data.get("users", []) if isinstance(users_data, dict) else []
+    if users and len(users) > 0:
+      USER_EMAIL = users[0].get("email")
+      print(f"[INFO] Retrieved user email: {USER_EMAIL}")
+      return USER_EMAIL
+  except Exception as e:
+    print(f"[WARN] Could not retrieve user email: {e}")
+  
+  return None
+
+
 async def tool_list_bookings_by_email(email: str) -> Dict[str, Any]:
   # GET /bookings?email=...
   params = {"email": email}
@@ -145,7 +167,7 @@ async def tool_list_bookings_by_email(email: str) -> Dict[str, Any]:
 
 async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
   # POST /bookings
-  # Expected minimal fields: eventTypeId, start, end, name, email
+  # Expected minimal fields: eventTypeId, start, end, name (email is optional)
   # Cal.com API expects specific field names and formats
   payload = {
     "eventTypeId": kwargs.get("eventTypeId"),
@@ -153,9 +175,15 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
     "end": kwargs.get("end"),
     "responses": {
       "name": kwargs.get("name"),
-      "email": kwargs.get("email"),
     }
   }
+  
+  # Add email to responses - use provided email or auto-retrieved email
+  email = kwargs.get("email")
+  if not email:
+    email = await get_user_email()
+  if email:
+    payload["responses"]["email"] = email
   
   # Ensure proper timezone handling for Cal.com
   start_time = kwargs.get("start")
@@ -265,7 +293,7 @@ TOOLS: List[Dict[str, Any]] = [
     "function": {
       "name": "create_booking",
       "description": (
-        "Create a new booking. Requires eventTypeId, start and end ISO8601 timestamps, and attendee info."
+        "Create a new booking. Requires eventTypeId, start and end ISO8601 timestamps, and attendee name. Email is automatically retrieved from the account."
       ),
       "parameters": {
         "type": "object",
@@ -273,14 +301,13 @@ TOOLS: List[Dict[str, Any]] = [
           "eventTypeId": {"type": "integer"},
           "start": {"type": "string", "description": "ISO8601 start"},
           "end": {"type": "string", "description": "ISO8601 end"},
-          "name": {"type": "string"},
-          "email": {"type": "string"},
+          "name": {"type": "string", "description": "Attendee name"},
           "title": {"type": "string"},
           "timeZone": {"type": "string", "description": "Timezone like 'America/New_York'"},
           "language": {"type": "string", "description": "Language code like 'en'"},
           "notes": {"type": "string"},
         },
-        "required": ["eventTypeId", "start", "end", "name", "email"],
+        "required": ["eventTypeId", "start", "end", "name"],
       },
     },
   },
@@ -421,7 +448,7 @@ async def api_ask(req: AskRequest) -> Dict[str, Any]:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
-  messages = get_session_messages(req.session_id, req.user_email)
+  messages = get_session_messages(req.session_id)
   messages.append({"role": "user", "content": req.message})
 
   # First model request with tools enabled
