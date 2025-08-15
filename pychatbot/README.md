@@ -4,12 +4,9 @@ This is a minimal FastAPI backend that uses OpenAI tool/function calling to inte
 
 ## Features
 - Understands natural language requests to:
-  - List event types
-  - List bookings by user email
-  - Create bookings
-  - Cancel bookings
-  - Reschedule bookings (simple cancel+recreate fallback)
-- Maintains basic session context by `session_id`
+  - List users
+  - Book meetings
+  - List meetings
 
 ## Setup
 1. Create a Python 3.10+ virtual environment
@@ -22,7 +19,7 @@ pip install -r pychatbot/requirements.txt
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 CAL_API_KEY=cal_test_...  # or cal_live_...
-CAL_BASE_URL=https://api.cal.com/v1
+CAL_BASE_URL=cal.com/...
 ```
 
 ## Run
