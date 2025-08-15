@@ -95,7 +95,7 @@ def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
       "ONLY suggest event types that actually exist in the user's Cal.com account - never suggest generic types like 'webinar' or 'consultation' unless they appear in the event types list. "
       "When details are missing (e.g., date/time, event type), ask follow-up questions. Email is automatically retrieved from the account - do not ask users for their email. "
       "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
-      "When creating bookings, be very careful with timezones - always confirm the user's timezone and use proper ISO 8601 format with timezone offset (e.g., '2024-01-15T23:00:00-08:00' for 11 PM PST). "
+      "CRITICAL TIMEZONE HANDLING: Before creating any booking, ALWAYS call get_user_timezone first to determine the user's timezone. If no timezone is found in their profile, ask them to specify their timezone from the provided options. Never assume UTC or create bookings without confirming timezone. Use proper ISO 8601 format with timezone offset (e.g., '2024-01-15T23:00:00-08:00' for 11 PM PST). "
       "Remember that PST is UTC-8 and PDT is UTC-7. Never convert times to UTC unless specifically requested. "
       "If you encounter 'no_available_users_found_error', explain that the user needs to set up their Cal.com account properly first (user profile, availability, event types). "
       "If you encounter 'availability_conflict' errors, clearly explain that the requested time is outside the user's configured availability hours and suggest alternative times within their availability window. "
@@ -150,6 +150,49 @@ async def tool_list_availabilities() -> Dict[str, Any]:
 async def tool_get_availability(availability_id: int) -> Dict[str, Any]:
   # GET /availabilities/{id} - get specific availability configuration
   return await cal_request("GET", f"/availabilities/{availability_id}")
+
+
+async def tool_get_user_timezone() -> Dict[str, Any]:
+  """Attempt to get user's timezone from their Cal.com profile or provide common options"""
+  try:
+    # Try to get timezone from user profile
+    users_data = await cal_request("GET", "/users")
+    if isinstance(users_data, dict) and "users" in users_data:
+      users = users_data["users"]
+      if users and len(users) > 0:
+        user = users[0]
+        timezone = user.get("timeZone") or user.get("timezone")
+        if timezone:
+          return {
+            "timezone": timezone,
+            "source": "user_profile",
+            "message": f"Found timezone from your Cal.com profile: {timezone}"
+          }
+    
+    # If no timezone found, return common options for user to choose
+    return {
+      "timezone": None,
+      "source": "needs_selection",
+      "message": "No timezone found in your profile. Please specify your timezone.",
+      "common_timezones": [
+        "America/Los_Angeles (PST/PDT - West Coast)",
+        "America/Denver (MST/MDT - Mountain Time)", 
+        "America/Chicago (CST/CDT - Central Time)",
+        "America/New_York (EST/EDT - East Coast)",
+        "Europe/London (GMT/BST - UK)",
+        "Europe/Paris (CET/CEST - Central Europe)",
+        "Asia/Tokyo (JST - Japan)",
+        "Australia/Sydney (AEDT/AEST - Australia East)"
+      ]
+    }
+  except Exception as e:
+    print(f"[DEBUG] Error getting user timezone: {e}")
+    return {
+      "timezone": "America/Los_Angeles",  # Default fallback
+      "source": "default_fallback", 
+      "message": "Could not determine timezone. Using Pacific Time as default. Please specify if different.",
+      "error": str(e)
+    }
 
 
 async def tool_get_available_slots(event_type_id: int, start_date: str, end_date: str, timezone: str = "America/Los_Angeles") -> Dict[str, Any]:
@@ -216,6 +259,16 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
   # Add optional fields with correct Cal.com naming
   if kwargs.get("timeZone") or kwargs.get("timezone"):
     payload["timeZone"] = kwargs.get("timeZone") or kwargs.get("timezone")
+  else:
+    # If no timezone provided, try to get user's default timezone
+    try:
+      timezone_info = await tool_get_user_timezone()
+      if timezone_info.get("timezone"):
+        payload["timeZone"] = timezone_info["timezone"]
+        print(f"[INFO] Auto-detected timezone: {timezone_info['timezone']}")
+    except Exception as e:
+      print(f"[DEBUG] Could not auto-detect timezone: {e}")
+      # Don't set a default timezone - let Cal.com handle it or fail with clear error
   
   if kwargs.get("language"):
     payload["language"] = kwargs.get("language")
@@ -265,22 +318,61 @@ async def tool_reschedule_booking(booking_id: int, new_start: str, new_end: str)
   # Simple strategy: cancel + recreate is a fallback if dedicated reschedule endpoint is unavailable.
   # 1) GET booking to capture details
   booking = await cal_request("GET", f"/bookings/{booking_id}")
-  # 2) Cancel
-  await cal_request("DELETE", f"/bookings/{booking_id}")
-  # 3) Recreate with adjusted times using original fields when possible
+  print(f"[DEBUG] Original booking data: {booking}")
+  
+  # Extract the original booking details
   orig = booking.get("booking") or booking
+  
+  # 2) Cancel the original booking
+  cancel_result = await cal_request("DELETE", f"/bookings/{booking_id}")
+  print(f"[DEBUG] Cancel result: {cancel_result}")
+  
+  # 3) Recreate with adjusted times using the modern responses format
+  # Get user email if not available in original booking
+  email = orig.get("email")
+  if not email:
+    email = await get_user_email()
+  
+  # Build payload using the same format as tool_create_booking
   payload = {
     "eventTypeId": orig.get("eventTypeId"),
     "start": new_start,
     "end": new_end,
-    "name": orig.get("name"),
-    "email": orig.get("email"),
-    "title": orig.get("title"),
-    "timezone": orig.get("timezone"),
-    "location": orig.get("location"),
-    "notes": orig.get("notes"),
-    "userFields": orig.get("userFields"),
+    "responses": {
+      "name": orig.get("name") or orig.get("attendees", [{}])[0].get("name", "User"),
+    }
   }
+  
+  # Add email to responses if available
+  if email:
+    payload["responses"]["email"] = email
+  
+  # Add optional fields with correct Cal.com naming
+  if orig.get("timeZone") or orig.get("timezone"):
+    payload["timeZone"] = orig.get("timeZone") or orig.get("timezone")
+  
+  payload["language"] = orig.get("language", "en")
+  payload["metadata"] = orig.get("metadata", {})
+  
+  if orig.get("title"):
+    payload["title"] = orig.get("title")
+    
+  if orig.get("notes"):
+    payload["responses"]["notes"] = orig.get("notes")
+  
+  # Add user/host information if we can get it (same as create_booking)
+  try:
+    users_data = await cal_request("GET", "/users")
+    if isinstance(users_data, dict) and "users" in users_data:
+      users = users_data["users"]
+      if users and len(users) > 0:
+        first_user = users[0]
+        if "id" in first_user:
+          payload["userId"] = first_user["id"]
+  except Exception as e:
+    print(f"[DEBUG] Could not fetch users for rescheduling: {e}")
+  
+  print(f"[DEBUG] Reschedule payload: {payload}")
   return await cal_request("POST", "/bookings", json_body=payload)
 
 
@@ -348,6 +440,17 @@ TOOLS: List[Dict[str, Any]] = [
           "availability_id": {"type": "integer", "description": "ID of the availability to retrieve"},
         },
         "required": ["availability_id"],
+      },
+    },
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_user_timezone",
+      "description": "Get the user's timezone from their Cal.com profile or provide common timezone options for selection",
+      "parameters": {
+        "type": "object",
+        "properties": {},
       },
     },
   },
@@ -443,6 +546,8 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
     return await tool_list_availabilities()
   if name == "get_availability":
     return await tool_get_availability(availability_id=args.get("availability_id"))
+  if name == "get_user_timezone":
+    return await tool_get_user_timezone()
   if name == "list_bookings_by_email":
     email = args.get("email")
     return await tool_list_bookings_by_email(email=email)
