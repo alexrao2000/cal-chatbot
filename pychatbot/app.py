@@ -99,6 +99,7 @@ def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
       "Remember that PST is UTC-8 and PDT is UTC-7. Never convert times to UTC unless specifically requested. "
       "If you encounter 'no_available_users_found_error', explain that the user needs to set up their Cal.com account properly first (user profile, availability, event types). "
       "If you encounter 'availability_conflict' errors, clearly explain that the requested time is outside the user's configured availability hours and suggest alternative times within their availability window. "
+      "If you encounter 'scheduling_conflict' errors, explain that the time slot is already booked and use the get_available_slots tool to suggest alternative times near the requested time. "
       "If asked about your model, state that you are accessing the OpenAI API but cannot reliably self-identify your exact model version."
     )
     SESSION_ID_TO_MESSAGES[session_id] = [
@@ -140,6 +141,17 @@ async def tool_list_users() -> Dict[str, Any]:
   return await cal_request("GET", "/users")
 
 
+async def tool_get_available_slots(event_type_id: int, start_date: str, end_date: str, timezone: str = "America/Los_Angeles") -> Dict[str, Any]:
+  # GET /slots - get available time slots for an event type
+  params = {
+    "eventTypeId": event_type_id,
+    "startTime": start_date,
+    "endTime": end_date,
+    "timeZone": timezone
+  }
+  return await cal_request("GET", "/slots", params=params)
+
+
 async def get_user_email() -> Optional[str]:
   """Fetch user email from Cal.com API and cache it globally"""
   global USER_EMAIL
@@ -148,10 +160,12 @@ async def get_user_email() -> Optional[str]:
     
   try:
     users_data = await cal_request("GET", "/users")
+    print(f"[DEBUG] Users API response: {users_data}")
     users = users_data.get("users", []) if isinstance(users_data, dict) else []
     if users and len(users) > 0:
       USER_EMAIL = users[0].get("email")
       print(f"[INFO] Retrieved user email: {USER_EMAIL}")
+      print(f"[DEBUG] First user data: {users[0]}")
       return USER_EMAIL
   except Exception as e:
     print(f"[WARN] Could not retrieve user email: {e}")
@@ -169,6 +183,14 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
   # POST /bookings
   # Expected minimal fields: eventTypeId, start, end, name (email is optional)
   # Cal.com API expects specific field names and formats
+  
+  # Get user email for booking
+  email = kwargs.get("email")
+  if not email:
+    email = await get_user_email()
+  
+  # Build the core payload structure that Cal.com v1 expects
+  # Use the modern 'responses' format (not legacy top-level name/email)
   payload = {
     "eventTypeId": kwargs.get("eventTypeId"),
     "start": kwargs.get("start"),
@@ -178,22 +200,9 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
     }
   }
   
-  # Add email to responses - use provided email or auto-retrieved email
-  email = kwargs.get("email")
-  if not email:
-    email = await get_user_email()
+  # Add email to responses if available
   if email:
     payload["responses"]["email"] = email
-  
-  # Ensure proper timezone handling for Cal.com
-  start_time = kwargs.get("start")
-  end_time = kwargs.get("end")
-  if start_time and "T" in start_time:
-    # Cal.com expects ISO format in the user's timezone, not UTC
-    # Keep the original timezone format that was provided
-    payload["start"] = start_time
-    if end_time:
-      payload["end"] = end_time
   
   # Add optional fields with correct Cal.com naming
   if kwargs.get("timeZone") or kwargs.get("timezone"):
@@ -215,8 +224,25 @@ async def tool_create_booking(**kwargs: Any) -> Dict[str, Any]:
   if kwargs.get("notes"):
     payload["responses"]["notes"] = kwargs.get("notes")
   
+  # Try adding some fields that might be required for user availability
+  # Add user/host information if we can get it
+  try:
+    users_data = await cal_request("GET", "/users")
+    print(f"[DEBUG] Available users: {users_data}")
+    
+    if isinstance(users_data, dict) and "users" in users_data:
+      users = users_data["users"]
+      if users and len(users) > 0:
+        first_user = users[0]
+        # Try adding user ID or other identifying info
+        if "id" in first_user:
+          payload["userId"] = first_user["id"]
+        print(f"[DEBUG] Added userId {first_user.get('id')} to payload")
+  except Exception as e:
+    print(f"[DEBUG] Could not fetch users for debugging: {e}")
+  
   # Debug logging
-  print(f"[DEBUG] Booking payload: {payload}")
+  print(f"[DEBUG] Final booking payload: {payload}")
     
   return await cal_request("POST", "/bookings", json_body=payload)
 
@@ -271,6 +297,23 @@ TOOLS: List[Dict[str, Any]] = [
       "parameters": {
         "type": "object",
         "properties": {},
+      },
+    },
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_available_slots",
+      "description": "Get available time slots for an event type within a date range to suggest alternative times",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "event_type_id": {"type": "integer", "description": "Event type ID to check availability for"},
+          "start_date": {"type": "string", "description": "Start date for checking availability (ISO8601 format)"},
+          "end_date": {"type": "string", "description": "End date for checking availability (ISO8601 format)"},
+          "timezone": {"type": "string", "description": "Timezone like 'America/Los_Angeles'", "default": "America/Los_Angeles"},
+        },
+        "required": ["event_type_id", "start_date", "end_date"],
       },
     },
   },
@@ -355,6 +398,13 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
     return await tool_list_event_types()
   if name == "list_users":
     return await tool_list_users()
+  if name == "get_available_slots":
+    return await tool_get_available_slots(
+      event_type_id=args.get("event_type_id"),
+      start_date=args.get("start_date"),
+      end_date=args.get("end_date"),
+      timezone=args.get("timezone", "America/Los_Angeles")
+    )
   if name == "list_bookings_by_email":
     email = args.get("email")
     return await tool_list_bookings_by_email(email=email)
@@ -492,23 +542,55 @@ async def chat(req: ChatRequest) -> ChatResponse:
         
         # Provide helpful guidance for common Cal.com errors
         if "no_available_users_found_error" in error_msg:
-          error_result = {
-            "error": "no_available_users_found_error", 
-            "tool_name": tool_name,
-            "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
-          }
+          # Check if this is a booking error and if we can actually list users
+          # This suggests the account setup is fine, but there's an API issue
+          if tool_name == "create_booking":
+            try:
+              users_check = await cal_request("GET", "/users")
+              if users_check and isinstance(users_check, dict) and users_check.get("users"):
+                error_result = {
+                  "error": "no_available_users_found_error",
+                  "tool_name": tool_name,
+                  "guidance": "The Cal.com account setup appears correct (users found), but booking creation is failing. This may be a temporary API issue or the event type may not be properly configured. Try again or check if the event type is assigned to a user.",
+                  "debug_info": f"Users found: {len(users_check.get('users', []))}"
+                }
+              else:
+                error_result = {
+                  "error": "no_available_users_found_error", 
+                  "tool_name": tool_name,
+                  "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
+                }
+            except Exception:
+              error_result = {
+                "error": "no_available_users_found_error", 
+                "tool_name": tool_name,
+                "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
+              }
+          else:
+            error_result = {
+              "error": "no_available_users_found_error", 
+              "tool_name": tool_name,
+              "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
+            }
         elif "event_type_not_found" in error_msg:
           error_result = {
             "error": "event_type_not_found",
             "tool_name": tool_name, 
             "guidance": "The event type doesn't exist. First list available event types to see what's available."
           }
-        elif any(phrase in error_msg.lower() for phrase in ["not available", "outside availability", "availability", "schedule", "conflict", "invalid time"]):
+        elif any(phrase in error_msg.lower() for phrase in ["already booked", "time slot", "conflict", "overlapping", "not available at this time"]):
+          error_result = {
+            "error": "scheduling_conflict",
+            "tool_name": tool_name,
+            "original_error": error_msg,
+            "guidance": "This time slot is already booked or conflicts with an existing meeting. Please choose a different time or check your calendar for available slots."
+          }
+        elif any(phrase in error_msg.lower() for phrase in ["not available", "outside availability", "availability", "business hours", "invalid time", "outside working hours"]):
           error_result = {
             "error": "availability_conflict",
             "tool_name": tool_name,
             "original_error": error_msg,
-            "guidance": "The requested time is outside the available booking hours or conflicts with existing availability. Please choose a different time within the configured availability window."
+            "guidance": "The requested time is outside your configured availability hours. Please choose a time within your available booking windows or update your availability settings."
           }
         else:
           error_result = {"error": error_msg, "tool_name": tool_name}
