@@ -12,7 +12,7 @@ This is a minimal FastAPI backend that uses OpenAI tool/function calling to inte
 1. Create a Python 3.10+ virtual environment, `python -m venv venv`
 2. Install deps:
 ```bash
-pip install -r pychatbot/requirements.txt
+pip install -r requirements.txt
 ```
 3. Create `.env` (root or `pychatbot/`) with:
 ```env
