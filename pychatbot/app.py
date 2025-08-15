@@ -142,6 +142,16 @@ async def tool_list_users() -> Dict[str, Any]:
   return await cal_request("GET", "/users")
 
 
+async def tool_list_availabilities() -> Dict[str, Any]:
+  # GET /availabilities - get all availabilities for the user
+  return await cal_request("GET", "/availabilities")
+
+
+async def tool_get_availability(availability_id: int) -> Dict[str, Any]:
+  # GET /availabilities/{id} - get specific availability configuration
+  return await cal_request("GET", f"/availabilities/{availability_id}")
+
+
 async def tool_get_available_slots(event_type_id: int, start_date: str, end_date: str, timezone: str = "America/Los_Angeles") -> Dict[str, Any]:
   # Cal.com v1 API doesn't have a reliable /slots endpoint
   # Return a helpful message instead of failing
@@ -319,6 +329,31 @@ TOOLS: List[Dict[str, Any]] = [
   {
     "type": "function",
     "function": {
+      "name": "list_availabilities",
+      "description": "List all availability schedules/windows configured for the user",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+      },
+    },
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_availability",
+      "description": "Get specific availability configuration by ID",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "availability_id": {"type": "integer", "description": "ID of the availability to retrieve"},
+        },
+        "required": ["availability_id"],
+      },
+    },
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "list_bookings_by_email",
       "description": "List bookings for a given user email",
       "parameters": {
@@ -404,6 +439,10 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
       end_date=args.get("end_date"),
       timezone=args.get("timezone", "America/Los_Angeles")
     )
+  if name == "list_availabilities":
+    return await tool_list_availabilities()
+  if name == "get_availability":
+    return await tool_get_availability(availability_id=args.get("availability_id"))
   if name == "list_bookings_by_email":
     email = args.get("email")
     return await tool_list_bookings_by_email(email=email)
