@@ -93,7 +93,7 @@ def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
       "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. When rescheduling, immediately execute the reschedule operation - don't ask for confirmation multiple times. "
       "ALWAYS start by listing available event types when a user first asks about booking, so they know what options are available. "
       "ONLY suggest event types that actually exist in the user's Cal.com account - never suggest generic types like 'webinar' or 'consultation' unless they appear in the event types list. "
-      "IMPORTANT: When a user provides all required booking details (event type, date/time), take immediate action - don't just explain what you'll do, actually call the tools and complete the booking. Be action-oriented, not just conversational. "
+      "CRITICAL: NEVER pause mid-task or ask users to tell you to continue. When a user provides booking details, IMMEDIATELY call all necessary tools to complete the task in one response. If you need timezone, call get_user_timezone. If you need event types, call list_event_types. If you need to create booking, call create_booking. Execute ALL required steps without pausing. After completing any booking operation (create, cancel, reschedule), call clear_booking_context to prevent old info from affecting future requests. Be action-oriented, not conversational. "
       "When details are missing (e.g., date/time, event type), ask follow-up questions. Email is automatically retrieved from the account - do not ask users for their email. "
       "Use today's date as reference for relative time expressions like 'tomorrow', 'next week', etc. "
       "CRITICAL TIMEZONE HANDLING: When a user requests a booking, IMMEDIATELY call get_user_timezone to determine their timezone - don't just say you will check it, actually do it right away. If timezone is found, proceed directly with the booking. If no timezone is found, ask them to specify from the provided options. Never assume UTC or create bookings without confirmed timezone. Use proper ISO 8601 format with timezone offset (e.g., '2024-01-15T23:00:00-08:00' for 11 PM PST). "
@@ -151,6 +151,14 @@ async def tool_list_availabilities() -> Dict[str, Any]:
 async def tool_get_availability(availability_id: int) -> Dict[str, Any]:
   # GET /availabilities/{id} - get specific availability configuration
   return await cal_request("GET", f"/availabilities/{availability_id}")
+
+
+async def tool_clear_booking_context() -> Dict[str, Any]:
+  """Clear any residual booking context to prevent info from carrying over to next request"""
+  return {
+    "context_cleared": True,
+    "message": "Booking context cleared. Ready for new request."
+  }
 
 
 async def tool_get_user_timezone() -> Dict[str, Any]:
@@ -481,6 +489,17 @@ TOOLS: List[Dict[str, Any]] = [
   {
     "type": "function",
     "function": {
+      "name": "clear_booking_context",
+      "description": "Clear any residual booking context to start fresh with a new booking request",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+      },
+    },
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "get_user_timezone",
       "description": "Get the user's timezone from their Cal.com profile or provide common timezone options for selection",
       "parameters": {
@@ -581,6 +600,8 @@ async def dispatch_tool_call(name: str, arguments_json: str) -> Dict[str, Any]:
     return await tool_list_availabilities()
   if name == "get_availability":
     return await tool_get_availability(availability_id=args.get("availability_id"))
+  if name == "clear_booking_context":
+    return await tool_clear_booking_context()
   if name == "get_user_timezone":
     return await tool_get_user_timezone()
   if name == "list_bookings_by_email":
@@ -677,6 +698,17 @@ async def api_ask(req: AskRequest) -> Dict[str, Any]:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
   messages = get_session_messages(req.session_id)
+  
+  # Detect if this is a new booking request (to clear old context)
+  booking_keywords = ["book", "schedule", "meeting", "appointment", "reschedule", "cancel"]
+  user_message_lower = req.message.lower()
+  is_new_booking_request = any(keyword in user_message_lower for keyword in booking_keywords)
+  
+  # If it's a new booking request and there are previous messages, add a context clear instruction
+  if is_new_booking_request and len(messages) > 1:  # More than just system message
+    # Add a system instruction to clear context for new booking
+    messages.append({"role": "system", "content": "NEW BOOKING REQUEST DETECTED: Clear any previous booking context before processing this request."})
+  
   messages.append({"role": "user", "content": req.message})
 
   # First model request with tools enabled
