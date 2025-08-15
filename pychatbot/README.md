@@ -6,7 +6,9 @@ This is a minimal FastAPI backend that uses OpenAI tool/function calling to inte
 - Understands natural language requests to:
   - List users
   - Book meetings
+    - Needs timezone, time, date, and type (15 min, 30 min, etc.)
   - List meetings
+  - Cancel Events
 
 ## Setup
 1. Create a Python 3.10+ virtual environment, `python -m venv venv`
