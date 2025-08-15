@@ -90,7 +90,7 @@ def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
       f"IMPORTANT: You are {OPENAI_MODEL}, NOT GPT-3. Do not claim to be GPT-3 or any other model. "
       f"You are an advanced AI assistant connected to the Cal.com API. "
       f"Today's date is {current_date} and the current time is {current_time}. "
-      "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. "
+      "You can list event types, list a user's bookings by email, create bookings, cancel bookings, and reschedule by cancel+rebook. When rescheduling, immediately execute the reschedule operation - don't ask for confirmation multiple times. "
       "ALWAYS start by listing available event types when a user first asks about booking, so they know what options are available. "
       "ONLY suggest event types that actually exist in the user's Cal.com account - never suggest generic types like 'webinar' or 'consultation' unless they appear in the event types list. "
       "IMPORTANT: When a user provides all required booking details (event type, date/time), take immediate action - don't just explain what you'll do, actually call the tools and complete the booking. Be action-oriented, not just conversational. "
@@ -316,7 +316,7 @@ async def tool_cancel_booking(booking_id: int) -> Dict[str, Any]:
 
 
 async def tool_reschedule_booking(booking_id: int, new_start: str, new_end: str) -> Dict[str, Any]:
-  # Simple strategy: cancel + recreate is a fallback if dedicated reschedule endpoint is unavailable.
+  # Safer strategy: prepare the new booking first, then cancel+recreate atomically
   # 1) GET booking to capture details
   booking = await cal_request("GET", f"/bookings/{booking_id}")
   print(f"[DEBUG] Original booking data: {booking}")
@@ -324,15 +324,15 @@ async def tool_reschedule_booking(booking_id: int, new_start: str, new_end: str)
   # Extract the original booking details
   orig = booking.get("booking") or booking
   
-  # 2) Cancel the original booking
-  cancel_result = await cal_request("DELETE", f"/bookings/{booking_id}")
-  print(f"[DEBUG] Cancel result: {cancel_result}")
-  
-  # 3) Recreate with adjusted times using the modern responses format
+  # 2) PREPARE the new booking payload BEFORE canceling (safer approach)
   # Get user email if not available in original booking
   email = orig.get("email")
   if not email:
     email = await get_user_email()
+  
+  # Validate we have required fields
+  if not orig.get("eventTypeId"):
+    raise ValueError("Cannot reschedule: original booking missing eventTypeId")
   
   # Build payload using the same format as tool_create_booking
   payload = {
@@ -351,6 +351,16 @@ async def tool_reschedule_booking(booking_id: int, new_start: str, new_end: str)
   # Add optional fields with correct Cal.com naming
   if orig.get("timeZone") or orig.get("timezone"):
     payload["timeZone"] = orig.get("timeZone") or orig.get("timezone")
+  else:
+    # If no timezone in original booking, try to get user's default timezone (same as create_booking)
+    try:
+      timezone_info = await tool_get_user_timezone()
+      if timezone_info.get("timezone"):
+        payload["timeZone"] = timezone_info["timezone"]
+        print(f"[INFO] Auto-detected timezone for rescheduling: {timezone_info['timezone']}")
+    except Exception as e:
+      print(f"[DEBUG] Could not auto-detect timezone for rescheduling: {e}")
+      # Don't set a default timezone - let Cal.com handle it or fail with clear error
   
   payload["language"] = orig.get("language", "en")
   payload["metadata"] = orig.get("metadata", {})
@@ -374,7 +384,31 @@ async def tool_reschedule_booking(booking_id: int, new_start: str, new_end: str)
     print(f"[DEBUG] Could not fetch users for rescheduling: {e}")
   
   print(f"[DEBUG] Reschedule payload: {payload}")
-  return await cal_request("POST", "/bookings", json_body=payload)
+  
+  # 3) Now that payload is ready, cancel the original booking
+  cancel_result = await cal_request("DELETE", f"/bookings/{booking_id}")
+  print(f"[DEBUG] Cancel result: {cancel_result}")
+  
+  # 4) Create the new booking
+  try:
+    new_booking = await cal_request("POST", "/bookings", json_body=payload)
+    print(f"[DEBUG] New booking created: {new_booking}")
+    return {
+      "success": True,
+      "message": "Booking rescheduled successfully",
+      "canceled_booking": cancel_result,
+      "new_booking": new_booking
+    }
+  except Exception as e:
+    print(f"[ERROR] Failed to create new booking after canceling: {e}")
+    # The original booking is already canceled, so we can't undo that
+    return {
+      "success": False,
+      "error": "Failed to create new booking after canceling original",
+      "details": str(e),
+      "canceled_booking": cancel_result,
+      "payload_used": payload
+    }
 
 
 # ---- OpenAI tool schema ----
@@ -713,10 +747,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
               }
           else:
             error_result = {
-              "error": "no_available_users_found_error", 
-              "tool_name": tool_name,
-              "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
-            }
+            "error": "no_available_users_found_error", 
+            "tool_name": tool_name,
+            "guidance": "You need to set up a user/host in your Cal.com account first. Go to your Cal.com dashboard and ensure you have: 1) A user profile created, 2) Availability windows configured, 3) Event types properly assigned to a user."
+          }
         elif "event_type_not_found" in error_msg:
           error_result = {
             "error": "event_type_not_found",
